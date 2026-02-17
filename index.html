@@ -282,7 +282,6 @@
 <footer class="footer"><p>رمضان مبارك 🌙 تقبّل الله منّا ومنكم صالح الأعمال</p></footer>
 <div class="toast" id="toast"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.js"></script>
 <script>
 let currentTheme = 'classic';
 let customImageData = null;
@@ -619,6 +618,214 @@ rc.forEach(card => {
   gg.appendChild(el);
 });
 
+// ===== Self-contained GIF Encoder =====
+class GifEncoder {
+  constructor(w, h) {
+    this.width = w;
+    this.height = h;
+    this.frames = [];
+    this.data = [];
+  }
+
+  addFrame(imageData, delay) {
+    this.frames.push({ data: imageData, delay: Math.round(delay / 10) });
+  }
+
+  encode() {
+    const d = this.data = [];
+    const w = (v) => { d.push(v & 0xFF); };
+    const w16 = (v) => { d.push(v & 0xFF); d.push((v >> 8) & 0xFF); };
+
+    // Header
+    [0x47,0x49,0x46,0x38,0x39,0x61].forEach(b => w(b)); // GIF89a
+
+    // Logical Screen Descriptor
+    w16(this.width); w16(this.height);
+    w(0xF7); // GCT flag, 256 colors (2^(7+1))
+    w(0); w(0); // bg color, pixel aspect
+
+    // Global Color Table (256 RGB entries) - will use first frame's palette
+    const palette = this._buildPalette(this.frames[0].data);
+    palette.forEach(c => { w(c[0]); w(c[1]); w(c[2]); });
+
+    // Netscape Extension (loop forever)
+    w(0x21); w(0xFF); w(0x0B);
+    [0x4E,0x45,0x54,0x53,0x43,0x41,0x50,0x45,0x32,0x2E,0x30].forEach(b => w(b));
+    w(0x03); w(0x01); w16(0); w(0x00);
+
+    // Frames
+    for (const frame of this.frames) {
+      const indexed = this._quantize(frame.data, palette);
+
+      // Graphic Control Extension
+      w(0x21); w(0xF9); w(0x04);
+      w(0x08); // disposal: restore to bg
+      w16(frame.delay);
+      w(0x00); // transparent color index (none)
+      w(0x00);
+
+      // Image Descriptor
+      w(0x2C);
+      w16(0); w16(0); // left, top
+      w16(this.width); w16(this.height);
+      w(0x00); // no local color table
+
+      // LZW compressed data
+      this._writeLZW(indexed, 8);
+    }
+
+    w(0x3B); // Trailer
+    return new Uint8Array(this.data);
+  }
+
+  _buildPalette(imgData) {
+    // Sample colors and build a 256-color palette
+    const colorMap = new Map();
+    const pixels = imgData.data;
+    const step = Math.max(1, Math.floor(pixels.length / 4 / 4000));
+
+    for (let i = 0; i < pixels.length; i += step * 4) {
+      // Reduce precision for grouping
+      const r = pixels[i] & 0xF8;
+      const g = pixels[i+1] & 0xF8;
+      const h = pixels[i+2] & 0xF8;
+      const key = (r << 16) | (g << 8) | h;
+      colorMap.set(key, (colorMap.get(key) || 0) + 1);
+    }
+
+    // Sort by frequency, take top 256
+    const sorted = [...colorMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 256);
+    const palette = sorted.map(([key]) => [(key >> 16) & 0xFF, (key >> 8) & 0xFF, key & 0xFF]);
+
+    // Pad to 256
+    while (palette.length < 256) palette.push([0, 0, 0]);
+    return palette;
+  }
+
+  _quantize(imgData, palette) {
+    const pixels = imgData.data;
+    const indexed = new Uint8Array(this.width * this.height);
+
+    // Build lookup cache for speed
+    const cache = new Map();
+
+    for (let i = 0; i < indexed.length; i++) {
+      const pi = i * 4;
+      const r = pixels[pi], g = pixels[pi+1], b = pixels[pi+2];
+      const cKey = ((r & 0xFC) << 16) | ((g & 0xFC) << 8) | (b & 0xFC);
+
+      if (cache.has(cKey)) {
+        indexed[i] = cache.get(cKey);
+      } else {
+        let best = 0, bestDist = Infinity;
+        for (let j = 0; j < 256; j++) {
+          const dr = r - palette[j][0], dg = g - palette[j][1], db = b - palette[j][2];
+          const dist = dr*dr + dg*dg + db*db;
+          if (dist < bestDist) { bestDist = dist; best = j; }
+          if (dist === 0) break;
+        }
+        cache.set(cKey, best);
+        indexed[i] = best;
+      }
+    }
+    return indexed;
+  }
+
+  _writeLZW(indexed, minCodeSize) {
+    const d = this.data;
+    d.push(minCodeSize);
+
+    const clearCode = 1 << minCodeSize;
+    const eoiCode = clearCode + 1;
+
+    let codeSize = minCodeSize + 1;
+    let nextCode = eoiCode + 1;
+    let maxCode = (1 << codeSize);
+
+    let table = new Map();
+
+    // Initialize table
+    const resetTable = () => {
+      table = new Map();
+      for (let i = 0; i < clearCode; i++) table.set(String(i), i);
+      codeSize = minCodeSize + 1;
+      nextCode = eoiCode + 1;
+      maxCode = (1 << codeSize);
+    };
+
+    resetTable();
+
+    let buffer = 0;
+    let bufBits = 0;
+    let subBlock = [];
+    let subBlockData = [];
+
+    const writeCode = (code) => {
+      buffer |= (code << bufBits);
+      bufBits += codeSize;
+
+      while (bufBits >= 8) {
+        subBlock.push(buffer & 0xFF);
+        buffer >>= 8;
+        bufBits -= 8;
+
+        if (subBlock.length >= 255) {
+          subBlockData.push(subBlock.length);
+          subBlock.forEach(b => subBlockData.push(b));
+          subBlock = [];
+        }
+      }
+    };
+
+    writeCode(clearCode);
+
+    if (indexed.length === 0) {
+      writeCode(eoiCode);
+    } else {
+      let cur = String(indexed[0]);
+
+      for (let i = 1; i < indexed.length; i++) {
+        const k = String(indexed[i]);
+        const combined = cur + ',' + k;
+
+        if (table.has(combined)) {
+          cur = combined;
+        } else {
+          writeCode(table.get(cur));
+
+          if (nextCode < 4096) {
+            table.set(combined, nextCode++);
+            if (nextCode > maxCode && codeSize < 12) {
+              codeSize++;
+              maxCode = (1 << codeSize);
+            }
+          } else {
+            writeCode(clearCode);
+            resetTable();
+          }
+          cur = k;
+        }
+      }
+
+      writeCode(table.get(cur));
+      writeCode(eoiCode);
+    }
+
+    // Flush remaining bits
+    if (bufBits > 0) {
+      subBlock.push(buffer & 0xFF);
+    }
+
+    if (subBlock.length > 0) {
+      subBlockData.push(subBlock.length);
+      subBlock.forEach(b => subBlockData.push(b));
+    }
+
+    subBlockData.forEach(b => d.push(b));
+    d.push(0x00); // Block terminator
+  }
+}
+
 // ===== GIF Download =====
 async function downloadGif() {
   const progress = document.getElementById('gifProgress');
@@ -632,18 +839,13 @@ async function downloadGif() {
   try {
     const card = document.getElementById('cardPreview');
     const rect = card.getBoundingClientRect();
-    const W = Math.round(rect.width);
-    const H = Math.round(rect.height);
-    const totalFrames = 30;
-    const frameDelay = 100;
+    const scale = 0.5; // smaller for faster GIF
+    const W = Math.round(rect.width * scale);
+    const H = Math.round(rect.height * scale);
+    const totalFrames = 20;
+    const frameDelay = 120;
 
-    const gif = new GIF({
-      workers: 2,
-      quality: 10,
-      width: W,
-      height: H,
-      workerScript: 'https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js'
-    });
+    const encoder = new GifEncoder(W, H);
 
     const sparkles = [];
     for (let i = 0; i < 15; i++) {
@@ -666,57 +868,57 @@ async function downloadGif() {
       const canvas = document.createElement('canvas');
       canvas.width = W; canvas.height = H;
       const ctx = canvas.getContext('2d');
+      ctx.scale(scale, scale);
+      const rW = rect.width, rH = rect.height;
 
       // Background
       if (customImg) {
-        ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
+        ctx.fillStyle = '#000'; ctx.fillRect(0,0,rW,rH);
         const br = document.getElementById('imageBrightness').value/100;
         const bl = document.getElementById('imageBlur').value;
         const scv = document.getElementById('imageScale').value/100;
         const op = document.getElementById('overlayOpacity').value/100;
-        ctx.filter = 'brightness('+br+') blur('+bl+'px)';
-        const ir = customImg.width/customImg.height, cr = W/H;
+        ctx.filter = 'brightness('+br+')';
+        const ir = customImg.width/customImg.height, cr = rW/rH;
         let dw, dh;
-        if(ir > cr) { dh = H*scv; dw = dh*ir; } else { dw = W*scv; dh = dw/ir; }
+        if(ir > cr) { dh = rH*scv; dw = dh*ir; } else { dw = rW*scv; dh = dw/ir; }
         const pm = {top:0,center:0.5,bottom:1,left:0,right:1};
         const [py, px] = imagePosition.split(' ');
-        const dx = (W-dw)*(pm[px]||0.5), dy = (H-dh)*(pm[py]||0.5);
+        const dx = (rW-dw)*(pm[px]||0.5), dy = (rH-dh)*(pm[py]||0.5);
         ctx.drawImage(customImg, dx, dy, dw, dh);
         ctx.filter = 'none';
         ctx.fillStyle = 'rgba('+overlayColor+','+op+')';
-        ctx.fillRect(0,0,W,H);
+        ctx.fillRect(0,0,rW,rH);
       } else {
         const tc = {classic:['#0A1628','#0F2042','#1A3060'],emerald:['#0B3D2E','#1B6B4A','#0D4F4F'],purple:['#1A0A2E','#2D1B4E','#1A0A2E'],sunset:['#4A1A00','#8B3A0F','#C45A1A'],white:['#FFFEF5','#F5ECD7','#EDE3C8'],teal:['#042F2E','#0D4F4F','#134E4A']};
         const c = tc[currentTheme];
-        const g = ctx.createLinearGradient(0,0,0,H);
+        const g = ctx.createLinearGradient(0,0,0,rH);
         g.addColorStop(0,c[0]); g.addColorStop(0.5,c[1]); g.addColorStop(1,c[2]);
-        ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+        ctx.fillStyle = g; ctx.fillRect(0,0,rW,rH);
       }
 
-      // Animated Sparkles
+      // Sparkles
       sparkles.forEach(sp => {
         const alpha = Math.max(0, Math.sin(sp.phase + t*Math.PI*2*sp.speed));
         if (alpha > 0.1) {
-          const floatY = sp.y*H - alpha*8;
           ctx.save(); ctx.globalAlpha = alpha*0.8;
           ctx.fillStyle = gC; ctx.shadowColor = gC; ctx.shadowBlur = 8;
-          ctx.beginPath(); ctx.arc(sp.x*W, floatY, sp.size*alpha, 0, Math.PI*2); ctx.fill();
+          ctx.beginPath(); ctx.arc(sp.x*rW, sp.y*rH - alpha*8, sp.size*alpha*2, 0, Math.PI*2); ctx.fill();
           ctx.restore();
         }
       });
 
       // Border & Corners
       ctx.strokeStyle = 'rgba(212,165,72,0.2)'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.roundRect(12,12,W-24,H-24,12); ctx.stroke();
+      ctx.beginPath(); ctx.roundRect(12,12,rW-24,rH-24,12); ctx.stroke();
       ctx.strokeStyle = 'rgba(212,165,72,0.5)'; ctx.lineWidth = 2;
-      [[W-8,10,W-8,30],[W-10,8,W-30,8],[8,10,8,30],[10,8,30,8],[W-8,H-10,W-8,H-30],[W-10,H-8,W-30,H-8],[8,H-10,8,H-30],[10,H-8,30,H-8]].forEach(([x1,y1,x2,y2]) => { ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); });
+      [[rW-8,10,rW-8,30],[rW-10,8,rW-30,8],[8,10,8,30],[10,8,30,8],[rW-8,rH-10,rW-8,rH-30],[rW-10,rH-8,rW-30,rH-8],[8,rH-10,8,rH-30],[10,rH-8,30,rH-8]].forEach(([x1,y1,x2,y2]) => { ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); });
 
-      // Content
-      const cx = W/2;
-      let y = H*0.28;
+      const cx = rW/2;
+      let y = rH*0.28;
       ctx.textAlign = 'center';
 
-      // Crescent with animated glow
+      // Crescent with glow
       if (!customImageActive) {
         const glowI = 15 + Math.sin(t*Math.PI*2)*12;
         ctx.save();
@@ -730,8 +932,7 @@ async function downloadGif() {
         ctx.beginPath(); ctx.arc(moonX+12, moonY-5, moonR-4, 0, Math.PI*2); ctx.fill();
         ctx.globalCompositeOperation = 'source-over';
         ctx.fillStyle = '#F0D78C'; ctx.shadowColor = 'rgba(212,165,72,0.7)'; ctx.shadowBlur = glowI;
-        function drawStarGif(sx,sy,oR,iR,pts) { ctx.beginPath(); for(let i=0;i<pts*2;i++){const r2=i%2===0?oR:iR;const a=(i*Math.PI/pts)-Math.PI/2;if(i===0)ctx.moveTo(sx+r2*Math.cos(a),sy+r2*Math.sin(a));else ctx.lineTo(sx+r2*Math.cos(a),sy+r2*Math.sin(a));}ctx.closePath();ctx.fill(); }
-        drawStarGif(cx+12, y-22, 7, 3, 5);
+        (function drawS(sx,sy,oR,iR,pts){ctx.beginPath();for(let i=0;i<pts*2;i++){const r2=i%2===0?oR:iR;const a=(i*Math.PI/pts)-Math.PI/2;if(i===0)ctx.moveTo(sx+r2*Math.cos(a),sy+r2*Math.sin(a));else ctx.lineTo(sx+r2*Math.cos(a),sy+r2*Math.sin(a));}ctx.closePath();ctx.fill();})(cx+12, y-22, 7, 3, 5);
         ctx.restore();
         y += 30;
       }
@@ -752,7 +953,7 @@ async function downloadGif() {
         ctx.font = "18px 'Amiri','Tajawal',serif";
         ctx.fillStyle = isW ? 'rgba(42,31,10,0.85)' : 'rgba(255,248,231,0.85)';
         ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 5;
-        const mw = W*0.75; let line = '';
+        const mw = rW*0.75; let line = '';
         for (const w of message.split(' ')) {
           const tl = line+w+' ';
           if(ctx.measureText(tl).width>mw && line) { ctx.fillText(line.trim(),cx,y); line=w+' '; y+=28; } else line=tl;
@@ -760,36 +961,35 @@ async function downloadGif() {
         ctx.fillText(line.trim(),cx,y); ctx.shadowBlur=0; y+=35;
       }
 
-      // Sender
       if (sender) {
         ctx.font = "bold 20px 'Reem Kufi','Tajawal',sans-serif"; ctx.fillStyle = gC;
         ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 10;
         ctx.fillText(sender, cx, y); ctx.shadowBlur = 0;
       }
 
-      gif.addFrame(canvas, { delay: frameDelay, copy: true });
-      progressBar.style.width = Math.round(((frame+1)/totalFrames)*70)+'%';
+      const imgData = ctx.getImageData(0, 0, W, H);
+      encoder.addFrame(imgData, frameDelay);
+
+      progressBar.style.width = Math.round(((frame+1)/totalFrames)*80)+'%';
       progressText.textContent = '⏳ إنشاء الإطار '+(frame+1)+'/'+totalFrames;
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise(r => setTimeout(r, 5));
     }
 
     progressText.textContent = '⏳ جاري تجميع الـ GIF...';
-    progressBar.style.width = '75%';
+    progressBar.style.width = '85%';
+    await new Promise(r => setTimeout(r, 50));
 
-    gif.on('progress', p => { progressBar.style.width = (75+p*25)+'%'; });
+    const gifData = encoder.encode();
+    const blob = new Blob([gifData], { type: 'image/gif' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'ramadan-card.gif'; a.click();
+    URL.revokeObjectURL(url);
 
-    gif.on('finished', blob => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'ramadan-card.gif'; a.click();
-      URL.revokeObjectURL(url);
-      progressBar.style.width = '100%';
-      progressText.textContent = '✅ تم تحميل الـ GIF!';
-      showToast('✅ تم تحميل الـ GIF بنجاح!');
-      setTimeout(() => { progress.style.display = 'none'; }, 3000);
-    });
-
-    gif.render();
+    progressBar.style.width = '100%';
+    progressText.textContent = '✅ تم تحميل الـ GIF!';
+    showToast('✅ تم تحميل الـ GIF بنجاح!');
+    setTimeout(() => { progress.style.display = 'none'; }, 3000);
   } catch(e) {
     console.error(e);
     showToast('❌ حدث خطأ أثناء إنشاء الـ GIF');
