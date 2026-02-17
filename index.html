@@ -237,8 +237,15 @@
       <input type="text" id="senderInput" placeholder="اسمك هنا..." oninput="updateCard()">
     </div>
     <div class="actions-row">
-      <button class="btn-primary" onclick="downloadCard()">📥 تحميل البطاقة</button>
-      <button class="btn-secondary" onclick="copyCard()">📋 نسخ النص</button>
+      <button class="btn-primary" onclick="downloadCard()">📥 صورة</button>
+      <button class="btn-primary" style="background:linear-gradient(135deg,#D4A548,#8B3A0F);" onclick="downloadGif()">🎬 GIF متحرك</button>
+      <button class="btn-secondary" onclick="copyCard()">📋 نسخ</button>
+    </div>
+    <div id="gifProgress" style="display:none;margin-top:12px;text-align:center;">
+      <div style="background:rgba(10,22,40,0.8);border:1px solid rgba(212,165,72,0.25);border-radius:12px;padding:14px;overflow:hidden;position:relative;">
+        <div id="gifProgressBar" style="position:absolute;top:0;left:0;height:100%;width:0%;background:rgba(212,165,72,0.15);border-radius:12px;transition:width 0.3s;"></div>
+        <span id="gifProgressText" style="position:relative;color:var(--gold-light);font-size:0.9rem;font-weight:600;">⏳ جاري إنشاء الـ GIF...</span>
+      </div>
     </div>
   </div>
 
@@ -275,6 +282,7 @@
 <footer class="footer"><p>رمضان مبارك 🌙 تقبّل الله منّا ومنكم صالح الأعمال</p></footer>
 <div class="toast" id="toast"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.js"></script>
 <script>
 let currentTheme = 'classic';
 let customImageData = null;
@@ -610,6 +618,184 @@ rc.forEach(card => {
   });
   gg.appendChild(el);
 });
+
+// ===== GIF Download =====
+async function downloadGif() {
+  const progress = document.getElementById('gifProgress');
+  const progressBar = document.getElementById('gifProgressBar');
+  const progressText = document.getElementById('gifProgressText');
+  progress.style.display = 'block';
+  progressBar.style.width = '0%';
+  progressText.textContent = '⏳ جاري إنشاء الـ GIF...';
+  showToast('⏳ جاري إنشاء الـ GIF المتحرك...');
+
+  try {
+    const card = document.getElementById('cardPreview');
+    const rect = card.getBoundingClientRect();
+    const W = Math.round(rect.width);
+    const H = Math.round(rect.height);
+    const totalFrames = 30;
+    const frameDelay = 100;
+
+    const gif = new GIF({
+      workers: 2,
+      quality: 10,
+      width: W,
+      height: H,
+      workerScript: 'https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js'
+    });
+
+    const sparkles = [];
+    for (let i = 0; i < 15; i++) {
+      sparkles.push({ x: 0.1+Math.random()*0.8, y: 0.15+Math.random()*0.7, phase: Math.random()*Math.PI*2, speed: 0.8+Math.random()*1.2, size: 1.5+Math.random()*2.5 });
+    }
+
+    let customImg = null;
+    if (customImageActive && customImageData) {
+      customImg = await new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = customImageData; });
+    }
+
+    const isW = currentTheme === 'white' && !customImageActive;
+    const gC = isW ? '#B8860B' : '#F0D78C';
+    const greeting = document.getElementById('greetingInput').value || 'رمضان كريم';
+    const message = document.getElementById('messageInput').value;
+    const sender = document.getElementById('senderInput').value;
+
+    for (let frame = 0; frame < totalFrames; frame++) {
+      const t = frame / totalFrames;
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext('2d');
+
+      // Background
+      if (customImg) {
+        ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
+        const br = document.getElementById('imageBrightness').value/100;
+        const bl = document.getElementById('imageBlur').value;
+        const scv = document.getElementById('imageScale').value/100;
+        const op = document.getElementById('overlayOpacity').value/100;
+        ctx.filter = 'brightness('+br+') blur('+bl+'px)';
+        const ir = customImg.width/customImg.height, cr = W/H;
+        let dw, dh;
+        if(ir > cr) { dh = H*scv; dw = dh*ir; } else { dw = W*scv; dh = dw/ir; }
+        const pm = {top:0,center:0.5,bottom:1,left:0,right:1};
+        const [py, px] = imagePosition.split(' ');
+        const dx = (W-dw)*(pm[px]||0.5), dy = (H-dh)*(pm[py]||0.5);
+        ctx.drawImage(customImg, dx, dy, dw, dh);
+        ctx.filter = 'none';
+        ctx.fillStyle = 'rgba('+overlayColor+','+op+')';
+        ctx.fillRect(0,0,W,H);
+      } else {
+        const tc = {classic:['#0A1628','#0F2042','#1A3060'],emerald:['#0B3D2E','#1B6B4A','#0D4F4F'],purple:['#1A0A2E','#2D1B4E','#1A0A2E'],sunset:['#4A1A00','#8B3A0F','#C45A1A'],white:['#FFFEF5','#F5ECD7','#EDE3C8'],teal:['#042F2E','#0D4F4F','#134E4A']};
+        const c = tc[currentTheme];
+        const g = ctx.createLinearGradient(0,0,0,H);
+        g.addColorStop(0,c[0]); g.addColorStop(0.5,c[1]); g.addColorStop(1,c[2]);
+        ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+      }
+
+      // Animated Sparkles
+      sparkles.forEach(sp => {
+        const alpha = Math.max(0, Math.sin(sp.phase + t*Math.PI*2*sp.speed));
+        if (alpha > 0.1) {
+          const floatY = sp.y*H - alpha*8;
+          ctx.save(); ctx.globalAlpha = alpha*0.8;
+          ctx.fillStyle = gC; ctx.shadowColor = gC; ctx.shadowBlur = 8;
+          ctx.beginPath(); ctx.arc(sp.x*W, floatY, sp.size*alpha, 0, Math.PI*2); ctx.fill();
+          ctx.restore();
+        }
+      });
+
+      // Border & Corners
+      ctx.strokeStyle = 'rgba(212,165,72,0.2)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.roundRect(12,12,W-24,H-24,12); ctx.stroke();
+      ctx.strokeStyle = 'rgba(212,165,72,0.5)'; ctx.lineWidth = 2;
+      [[W-8,10,W-8,30],[W-10,8,W-30,8],[8,10,8,30],[10,8,30,8],[W-8,H-10,W-8,H-30],[W-10,H-8,W-30,H-8],[8,H-10,8,H-30],[10,H-8,30,H-8]].forEach(([x1,y1,x2,y2]) => { ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); });
+
+      // Content
+      const cx = W/2;
+      let y = H*0.28;
+      ctx.textAlign = 'center';
+
+      // Crescent with animated glow
+      if (!customImageActive) {
+        const glowI = 15 + Math.sin(t*Math.PI*2)*12;
+        ctx.save();
+        const moonX = cx-15, moonY = y-20, moonR = 22;
+        ctx.shadowColor = 'rgba(212,165,72,0.7)'; ctx.shadowBlur = glowI;
+        ctx.beginPath(); ctx.arc(moonX, moonY, moonR, 0, Math.PI*2);
+        const mg = ctx.createRadialGradient(moonX,moonY,0,moonX,moonY,moonR);
+        mg.addColorStop(0,'#F0D78C'); mg.addColorStop(1,'#D4A548');
+        ctx.fillStyle = mg; ctx.fill();
+        ctx.globalCompositeOperation = 'destination-out'; ctx.shadowBlur = 0;
+        ctx.beginPath(); ctx.arc(moonX+12, moonY-5, moonR-4, 0, Math.PI*2); ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = '#F0D78C'; ctx.shadowColor = 'rgba(212,165,72,0.7)'; ctx.shadowBlur = glowI;
+        function drawStarGif(sx,sy,oR,iR,pts) { ctx.beginPath(); for(let i=0;i<pts*2;i++){const r2=i%2===0?oR:iR;const a=(i*Math.PI/pts)-Math.PI/2;if(i===0)ctx.moveTo(sx+r2*Math.cos(a),sy+r2*Math.sin(a));else ctx.lineTo(sx+r2*Math.cos(a),sy+r2*Math.sin(a));}ctx.closePath();ctx.fill(); }
+        drawStarGif(cx+12, y-22, 7, 3, 5);
+        ctx.restore();
+        y += 30;
+      }
+
+      // Greeting
+      ctx.font = "bold 32px 'Reem Kufi','Tajawal',sans-serif"; ctx.fillStyle = gC;
+      ctx.shadowColor = 'rgba(0,0,0,0.4)'; ctx.shadowBlur = 10;
+      ctx.fillText(greeting, cx, y); ctx.shadowBlur = 0; y += 30;
+
+      // Divider
+      const dg2 = ctx.createLinearGradient(cx-40,y,cx+40,y);
+      dg2.addColorStop(0,'transparent'); dg2.addColorStop(0.5,gC); dg2.addColorStop(1,'transparent');
+      ctx.strokeStyle = dg2; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(cx-40,y); ctx.lineTo(cx+40,y); ctx.stroke(); y += 30;
+
+      // Message
+      if (message) {
+        ctx.font = "18px 'Amiri','Tajawal',serif";
+        ctx.fillStyle = isW ? 'rgba(42,31,10,0.85)' : 'rgba(255,248,231,0.85)';
+        ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 5;
+        const mw = W*0.75; let line = '';
+        for (const w of message.split(' ')) {
+          const tl = line+w+' ';
+          if(ctx.measureText(tl).width>mw && line) { ctx.fillText(line.trim(),cx,y); line=w+' '; y+=28; } else line=tl;
+        }
+        ctx.fillText(line.trim(),cx,y); ctx.shadowBlur=0; y+=35;
+      }
+
+      // Sender
+      if (sender) {
+        ctx.font = "bold 20px 'Reem Kufi','Tajawal',sans-serif"; ctx.fillStyle = gC;
+        ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 10;
+        ctx.fillText(sender, cx, y); ctx.shadowBlur = 0;
+      }
+
+      gif.addFrame(canvas, { delay: frameDelay, copy: true });
+      progressBar.style.width = Math.round(((frame+1)/totalFrames)*70)+'%';
+      progressText.textContent = '⏳ إنشاء الإطار '+(frame+1)+'/'+totalFrames;
+      await new Promise(r => setTimeout(r, 10));
+    }
+
+    progressText.textContent = '⏳ جاري تجميع الـ GIF...';
+    progressBar.style.width = '75%';
+
+    gif.on('progress', p => { progressBar.style.width = (75+p*25)+'%'; });
+
+    gif.on('finished', blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'ramadan-card.gif'; a.click();
+      URL.revokeObjectURL(url);
+      progressBar.style.width = '100%';
+      progressText.textContent = '✅ تم تحميل الـ GIF!';
+      showToast('✅ تم تحميل الـ GIF بنجاح!');
+      setTimeout(() => { progress.style.display = 'none'; }, 3000);
+    });
+
+    gif.render();
+  } catch(e) {
+    console.error(e);
+    showToast('❌ حدث خطأ أثناء إنشاء الـ GIF');
+    progress.style.display = 'none';
+  }
+}
 </script>
 </body>
 </html>
