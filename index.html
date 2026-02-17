@@ -417,7 +417,7 @@ function updateCard() {
   document.getElementById('cardGreeting').textContent = document.getElementById('greetingInput').value || 'رمضان كريم';
   document.getElementById('cardMessage').textContent = document.getElementById('messageInput').value || '';
   const s = document.getElementById('senderInput').value;
-  document.getElementById('cardSender').textContent = s ? '— '+s : '';
+  document.getElementById('cardSender').textContent = s ? ''+s : '';
 }
 
 async function downloadCard() {
@@ -561,7 +561,7 @@ async function downloadCard() {
     }
 
     const snd = document.getElementById('senderInput').value;
-    if(snd) { ctx.font="18px 'Amiri','Tajawal',serif"; ctx.fillStyle=gC; ctx.fillText('— '+snd,cx,y); }
+    if(snd) { ctx.font="18px 'Amiri','Tajawal',serif"; ctx.fillStyle=gC; ctx.fillText(''+snd,cx,y); }
 
     canvas.toBlob(blob => {
       const u=URL.createObjectURL(blob), a=document.createElement('a');
@@ -575,7 +575,7 @@ function copyCard() {
   const g=document.getElementById('greetingInput').value||'رمضان كريم';
   const m=document.getElementById('messageInput').value;
   const s=document.getElementById('senderInput').value;
-  let t='🌙 '+g+' 🌙\n\n'; if(m) t+=m+'\n\n'; if(s) t+='— '+s;
+  let t='🌙 '+g+' 🌙\n\n'; if(m) t+=m+'\n\n'; if(s) t+=''+s;
   navigator.clipboard.writeText(t).then(()=>showToast('✅ تم نسخ النص بنجاح!')).catch(()=>showToast('❌ فشل النسخ'));
 }
 
