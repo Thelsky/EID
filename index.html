@@ -839,7 +839,7 @@ async function downloadGif() {
   try {
     const card = document.getElementById('cardPreview');
     const rect = card.getBoundingClientRect();
-    const scale = 0.5; // smaller for faster GIF
+    const scale = 1; // full resolution for readability
     const W = Math.round(rect.width * scale);
     const H = Math.round(rect.height * scale);
     const totalFrames = 20;
